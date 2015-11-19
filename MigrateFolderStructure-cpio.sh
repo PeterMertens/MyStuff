@@ -1,4 +1,4 @@
-#!/usr/dt/bin/dtksh
+#!/usr/bin/sh
 #
 # Author: Peter Mertens <pmertens@its.jnj.com>
 #
@@ -89,7 +89,7 @@ then Log 2 "INFO: nothing selected for transfer"
 else Log 2 "INFO: $count files selected for transfer"
      (( totalcount += count )) # Keep track of number of files to copy
      count=0 # reset for next transfers
-     (( ++thread_seq ))
+     (( thread_seq = thread_seq + 1 ))
      cpio_input=${file_prefix}_cpio_thread_${thread_seq}.dat
      cpio_log=${file_prefix}_cpio_thread_${thread_seq}.log
      Log 2 "INFO: cpio_input: ${cpio_input}"
@@ -130,7 +130,7 @@ do
     if   [[ -d "${from}/${file}" ]] # this is another subfolder
     then echo ${from}/${file} >> ${selected_files} # always select directory, so that also empty directories 
 	                                           # and even the archive/backup directories will be created
-         (( ++count ))
+         (( count = count + 1 ))
 	 u_dir="${file}" # put in uppercase for pattern matching
          if [[ "${u_dir}" = ?(BACKUP*|ARCH*|REORG*) ]]
          then Log 2 "INFO: Skipping backup/arch/reorg directory: ${from}/${file}"
@@ -138,7 +138,7 @@ do
          else ProcessDirectory "${from}/${file}" 
          fi
     else echo ${from}/${file} >> ${selected_files}
-         (( ++count ))
+         (( count = count + 1 ))
     fi
     [[ $(( count % iteration )) -eq 0 ]] && Log 2 "INFO: Progress: $count files selected / total-count=$totalcount / ${from}/${file}"
 done 
@@ -167,10 +167,10 @@ while getopts ":s:t:u:d:m:T:l:" opt; do
         esac
 done
 shift $(( OPTIND-1 ))
-[[ ${main_from} ]] || Usage $0 "-s is missing"
-[[ ${main_to}   ]] || Usage $0 "-t is missing"
-[[ ${su_user}   ]] || Usage $0 "-u is missing"
-[[ ${log_level}  = ?(high|medium|low) ]] || Usage $0 "log_level should be high, medium or low"
+[[ -z ${main_from} ]] && Usage $0 "-s is missing"
+[[ -z ${main_to}   ]] && Usage $0 "-t is missing"
+[[ -z ${su_user}   ]] && Usage $0 "-u is missing"
+[[ ${log_level}  != ?(high|medium|low) ]] && Usage $0 "log_level should be high, medium or low"
 
 # Show What We Got
 
@@ -192,12 +192,14 @@ Log 2 "INFO: $0 is starting"
 
 # Sanity checks
 
-[[ ${main_from:0:1} == "/" ]] && {
+### old dtksh equivalent [[ ${main_from:0:1} == "/" ]] && {
+[[ $(expr substr "$main_from" 1 1 ) = "/" ]] && {
+
     Log 1 "ERROR: ${main_from} MUST be a relative path and should not start with /."
     exit
     }
 
-[[ -d ${main_from} ]] || {
+[[ ! -d ${main_from} ]] && {
     Log 1 "ERROR: ${main_from} isn't a directory."
     exit
     }
@@ -208,7 +210,7 @@ pwget -n ${su_user} > /dev/null || {
     }
 
 type=$(su ${su_user} -c "file ${main_to}")
-[[ ${type##*	} == "directory" ]] || {
+[[ ${type##*	} != "directory" ]] && {
     Log 1 "ERROR: ${main_to} isn't a directory."
     exit
     }
