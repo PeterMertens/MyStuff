@@ -4,13 +4,6 @@
 #
 # This script will copy files from 1 directory tree to another while excluding
 # all directories that match a certain mask (e.g. backup|archive|...)
-#
-# $Revision$
-# $Date$
-# $Header$
-# $Id$
-# $Locker$
-# History: Check the bottom of the file for revision history
 # ----------------------------------------------------------------------------
 
 typeset -i count=0
@@ -24,6 +17,7 @@ typeset    selected_files=${file_prefix}_selected_files_$$.txt
 typeset    su_user # user that will create the target folder structure
                    # the script must be run as root in order to su without password
 typeset -l log_level=high
+typeset -l exclude=true
 
 typeset -ft Usage
 typeset -ft Log
@@ -39,6 +33,7 @@ cat - <<EOT
 --------------------------------------------------------------------------------
 Usage: $prog -s source-folder -t target-folder -u username [-d count] 
                 [-m max_threads] [-T start_cpio_threshold] [-l high|medium|low]
+                [-x true|false]
 
        This script can be used to transfer files from one directory tree to 
        another, excluding files in directories names /backup*, /arch* 
@@ -63,10 +58,12 @@ Options:
           selecting all files in that folder.
        -l log-level [high|medium|low]
           default=high
+       -x [true|false] exclude directories that match ?(BACKUP*|ARCH*|REORG*)
+          default=true
 
 Examples:
-cd  /export/ppr/data/CON; /home/pmertens/MigrateFolderStructure-cpio.sh -s . -t /NEW/CON -u CONadm -T 5000 -d 100 -m 4
-cd  /export/ppr/data; /home/pmertens/MigrateFolderStructure-cpio.sh -s CON -t /NEW/CON -u CONadm -T 5000 -d 100 -m 4
+cd  /source/subdir; /somewhere/MigrateFolderStructure-cpio.sh -s . -t /target/subdir -u username -T 5000 -d 100 -m 4
+cd  /source; /somewhere/MigrateFolderStructure-cpio.sh -s subdir -t /target/subdir -u username -T 5000 -d 100 -m 4
 EOT
 exit
 }
@@ -129,14 +126,16 @@ ls "${from}" | while read file
 do
     if   [[ -d "${from}/${file}" ]] # this is another subfolder
     then echo ${from}/${file} >> ${selected_files} # always select directory, so that also empty directories 
-	                                           # and even the archive/backup directories will be created
+                                                   # and even the archive/backup directories will be created
          (( count = count + 1 ))
-	 u_dir="${file}" # put in uppercase for pattern matching
-         if [[ "${u_dir}" = ?(BACKUP*|ARCH*|REORG*) ]]
-         then Log 2 "INFO: Skipping backup/arch/reorg directory: ${from}/${file}"
-              continue
-         else ProcessDirectory "${from}/${file}" 
+         if [[ "${exclude}" = "true" ]]
+         then u_dir="${file}" # put in uppercase for pattern matching
+              if [[ "${u_dir}" = ?(BACKUP*|ARCH*|REORG*) ]]
+              then Log 2 "INFO: Skipping backup/arch/reorg directory: ${from}/${file}"
+                   continue
+              fi
          fi
+         ProcessDirectory "${from}/${file}" 
     else echo ${from}/${file} >> ${selected_files}
          (( count = count + 1 ))
     fi
@@ -153,7 +152,7 @@ return # End of ProcessDirectory Function
 
 # Argument Handling
 
-while getopts ":s:t:u:d:m:T:l:" opt; do
+while getopts ":s:t:u:d:m:T:l:x:" opt; do
         case $opt in
                 :) Usage $0 "argument missing for option ${OPTARG}" ;;
                 s) main_from=${OPTARG} ;;
@@ -163,6 +162,7 @@ while getopts ":s:t:u:d:m:T:l:" opt; do
                 m) max_threads=${OPTARG} ;;
                 T) start_cpio_threshold=${OPTARG} ;;
                 l) log_level=${OPTARG} ;;
+                x) exclude=${OPTARG} ;;
                 ?|h) Usage $0 ;;
         esac
 done
@@ -171,19 +171,22 @@ shift $(( OPTIND-1 ))
 [[ -z ${main_to}   ]] && Usage $0 "-t is missing"
 [[ -z ${su_user}   ]] && Usage $0 "-u is missing"
 [[ ${log_level}  != ?(high|medium|low) ]] && Usage $0 "log_level should be high, medium or low"
+[[ ${exclude}    != ?(true|false) ]]      && Usage $0 "exclude should be true or false"
 
 # Show What We Got
 
 cat - <<EOT
 --------------------------------------------------------------------------------
-current working directory: $(pwd)
-                   source: ${main_from}
-                   target: ${main_to}
-                  su_user: ${su_user}
-     start_cpio_threshold:${start_cpio_threshold} # start cpio thread after exceeding threshold
-                iteration:${iteration} # display count every iteration
-              max_threads:${max_threads}  # do not run more than max_threads at the same time
-           selected_files:${selected_files}
+     current working directory: $(pwd)
+                        source: ${main_from}
+                        target: ${main_to}
+                       su_user: ${su_user}
+          start_cpio_threshold: ${start_cpio_threshold} # start cpio thread after exceeding threshold
+                     iteration: ${iteration} # display count every iteration
+                   max_threads: ${max_threads}  # do not run more than max_threads at the same time
+                     log_level: ${log_level}
+exclude backup/arch/reorg dirs: ${exclude}
+                selected_files: ${selected_files}
                all files start with ${file_prefix}
 --------------------------------------------------------------------------------
 EOT
