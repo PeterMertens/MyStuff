@@ -17,12 +17,23 @@ typeset    selected_files=${file_prefix}_selected_files_$$.txt
 typeset    su_user # user that will create the target folder structure
                    # the script must be run as root in order to su without password
 typeset -l log_level=high
-typeset -l exclude=true
+typeset -l select=all
 
 typeset -ft Usage
 typeset -ft Log
 typeset -ft StartCPIOThread
 typeset -ft ProcessDirectory
+
+# ------------------------------------------------------------------------------
+function Log {
+level=$1
+case ${log_level} in
+       low) [[ ${level} -gt 1 ]] && return ;;  # only list errors 
+    medium) [[ ${level} -gt 2 ]] && return ;;  # only list errors and interesting info
+         *) ;;                                 # list everything
+esac
+echo $(date '+%Y-%m-%d %H:%M:%S') $*
+}
 
 # ------------------------------------------------------------------------------
 function Usage {
@@ -33,7 +44,7 @@ cat - <<EOT
 --------------------------------------------------------------------------------
 Usage: $prog -s source-folder -t target-folder -u username [-d count] 
                 [-m max_threads] [-T start_cpio_threshold] [-l high|medium|low]
-                [-x true|false]
+                [-S all|old|new]
 
        This script can be used to transfer files from one directory tree to 
        another, excluding files in directories names /backup*, /arch* 
@@ -58,25 +69,17 @@ Options:
           selecting all files in that folder.
        -l log-level [high|medium|low]
           default=high
-       -x [true|false] exclude directories that match ?(BACKUP*|ARCH*|REORG*)
-          default=true
+       -S [all|old|new]
+          all = select all files from any folder
+          old = select only files from folders having [backup*|archive*|reorg*] in their name
+          new = select only files from folders that don't have [backup*|archive*|reorg*] in their name
+          default=all
 
 Examples:
 cd  /source/subdir; /somewhere/MigrateFolderStructure-cpio.sh -s . -t /target/subdir -u username -T 5000 -d 100 -m 4
 cd  /source; /somewhere/MigrateFolderStructure-cpio.sh -s subdir -t /target/subdir -u username -T 5000 -d 100 -m 4
 EOT
 exit
-}
-
-# ------------------------------------------------------------------------------
-function Log {
-level=$1
-case ${log_level} in
-       low) [[ ${level} -gt 1 ]] && return ;;  # only list errors 
-    medium) [[ ${level} -gt 2 ]] && return ;;  # only list errors and interesting info
-         *) ;;                                 # list everything
-esac
-echo $(date '+%Y-%m-%d %H:%M:%S') $*
 }
 
 # ------------------------------------------------------------------------------
@@ -128,11 +131,17 @@ do
     then echo ${from}/${file} >> ${selected_files} # always select directory, so that also empty directories 
                                                    # and even the archive/backup directories will be created
          (( count = count + 1 ))
-         if [[ "${exclude}" = "true" ]]
+         if [[ "${select}" != "all" ]]
          then u_dir="${file}" # put in uppercase for pattern matching
               if [[ "${u_dir}" = ?(BACKUP*|ARCH*|REORG*) ]]
-              then Log 2 "INFO: Skipping backup/arch/reorg directory: ${from}/${file}"
-                   continue
+              then if [[ "${select}" = "new" ]]
+                   then Log 2 "INFO: Skipping backup/arch/reorg directory: ${from}/${file}"
+                        continue
+                   fi    
+              else if [[ "${select}" = "old" ]]
+                   then Log 2 "INFO: Skipping NON-backup/arch/reorg directory: ${from}/${file}"
+                        continue
+                   fi
               fi
          fi
          ProcessDirectory "${from}/${file}" 
@@ -151,8 +160,7 @@ return # End of ProcessDirectory Function
 # MAIN -------------------------------------------------------------------------
 
 # Argument Handling
-
-while getopts ":s:t:u:d:m:T:l:x:" opt; do
+while getopts ":s:t:u:d:m:T:l:S:" opt; do
         case $opt in
                 :) Usage $0 "argument missing for option ${OPTARG}" ;;
                 s) main_from=${OPTARG} ;;
@@ -162,7 +170,7 @@ while getopts ":s:t:u:d:m:T:l:x:" opt; do
                 m) max_threads=${OPTARG} ;;
                 T) start_cpio_threshold=${OPTARG} ;;
                 l) log_level=${OPTARG} ;;
-                x) exclude=${OPTARG} ;;
+                S) select=${OPTARG} ;;
                 ?|h) Usage $0 ;;
         esac
 done
@@ -170,8 +178,8 @@ shift $(( OPTIND-1 ))
 [[ -z ${main_from} ]] && Usage $0 "-s is missing"
 [[ -z ${main_to}   ]] && Usage $0 "-t is missing"
 [[ -z ${su_user}   ]] && Usage $0 "-u is missing"
-[[ ${log_level}  != ?(high|medium|low) ]] && Usage $0 "log_level should be high, medium or low"
-[[ ${exclude}    != ?(true|false) ]]      && Usage $0 "exclude should be true or false"
+[[ ${log_level}  != ?(high|medium|low) ]] && Usage $0 "-l log_level should be high, medium or low"
+[[ ${select}     != ?(old|new|all)     ]] && Usage $0 "-l select should be old, new or all"
 
 # Show What We Got
 
@@ -185,7 +193,7 @@ cat - <<EOT
                      iteration: ${iteration} # display count every iteration
                    max_threads: ${max_threads}  # do not run more than max_threads at the same time
                      log_level: ${log_level}
-exclude backup/arch/reorg dirs: ${exclude}
+           wich dirs to select: ${select} (old means folder names starting with backup, arch or reorg)
                 selected_files: ${selected_files}
                all files start with ${file_prefix}
 --------------------------------------------------------------------------------
