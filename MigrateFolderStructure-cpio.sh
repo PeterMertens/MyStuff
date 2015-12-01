@@ -73,7 +73,8 @@ Options:
        -S [all|old|new]
           all = select all files from any folder
           old = select only files from folders having [backup*|archive*|reorg*] in their name
-          new = select only files from folders that don't have [backup*|archive*|reorg*] in their name
+		or from any subfolder under an old directory
+          new = the opposite of old
           default=all
 
 Examples:
@@ -86,24 +87,24 @@ exit
 # ------------------------------------------------------------------------------
 function StartCPIOThread {
 if [[ $count -eq 0 ]]
-then Log 2 "INFO: (01) nothing selected for transfer"
-else Log 2 "INFO: (20) $count files selected for transfer"
+then Log 2 "INFO: ($0 1) nothing selected for transfer"
+else Log 2 "INFO: ($0 2) $count files selected for transfer"
      (( totalcount += count )) # Keep track of number of files to copy
      count=0 # reset for next transfers
      (( thread_seq = thread_seq + 1 ))
      cpio_input=${file_prefix}_cpio_thread_${thread_seq}.dat
      cpio_log=${file_prefix}_cpio_thread_${thread_seq}.log
-     Log 2 "INFO: (03) cpio_input: ${cpio_input}"
-     Log 2 "INFO: (04)   cpio_log: ${cpio_log}"
+     Log 2 "INFO: ($0 3) cpio_input: ${cpio_input}"
+     Log 2 "INFO: ($0 4)   cpio_log: ${cpio_log}"
 
-     Log 3 "INFO: (05) check how many threads are active"
+     Log 3 "INFO: ($0 05) check how many threads are active"
      while [[ `jobs | wc -l` -ge ${max_threads} ]]
      do
          sleep 1
      done
 
      mv ${selected_files} ${cpio_input} || {
-        Log 1 "ERROR: (06) Failure in mv  mv ${selected_files} ${cpio_input}"
+        Log 1 "ERROR: ($0 06) Failure in mv  mv ${selected_files} ${cpio_input}"
         exit
         }
 
@@ -112,18 +113,43 @@ else Log 2 "INFO: (20) $count files selected for transfer"
      else (cat ${cpio_input} | cpio -oA | su ${su_user} -c "cd \"${main_to}\"; cpio -iUmd") > ${cpio_log} 2>&1 &
      fi
 
-     Log 2 "INFO: (07) cpio started in background with pid $!."
+     Log 2 "INFO: ($0 07) cpio started in background with pid $!."
 fi
 }
 
 # ------------------------------------------------------------------------------
+# ProcessDirectory will select all files in a directory and depending on the
+# -S option it will descend in subdirs.
+# -S all --> select all files and descend in all sub-directories
+# -S old --> only select files residing in directory-trees that have 'backup',
+#            'arch' or 'reorg' in the name.  The names are not case-sensitive.
+#            Any sub-dirs of these so called 'old' directories are also 
+#            considered old. The function will still descend in 'new' folders
+#            but won't select files in those new directories.  It will merely
+#            descend to search for 'old' dirs.
+# -S new --> only select files that do not reside in old directory trees
+#            (so this is the opposite of -S old). Does not descend in 'old'
+#            directories.
+#
+# Arguments:
+#  $1 - the folder to process
+#  $2 - foldertype (all, old or new)
+#       all: process all files and subdirectories from here.  This will be set
+#            if -S all has been chosen for the entire directory tree!
+#       old: foldertype will be set to old only if -s old has been chosen AND
+#            if we're processing a directory having an old directory somewhere
+#            up in its hierarchy
+#       new: foldertype will be set to new only if -s new has been chosen AND
+#            if we're processing a directory that doesn't have an old directory
+#            somewhere up in its hierarchy.
+# ------------------------------------------------------------------------------
 function ProcessDirectory {
 typeset    from=$1
-typeset    mode=$2
+typeset    foldertype=$2
 typeset    file
 typeset -u u_dir # uppercase directory name for case insensitive pattern matching
 
-Log 3 "INFO: (08) Starting to process ${from}"
+Log 3 "INFO: ($0 01) Starting to process ${from}"
 
 # Now start looking at the contents of this dir
 # We use the ls ${from} | while construction because a for file in construction gives
@@ -134,40 +160,48 @@ Log 3 "INFO: (08) Starting to process ${from}"
 ls "${from}" | while read file 
 do
     if   [[ -d "${from}/${file}" ]] # this is another subfolder
-    then echo ${from}/${file} >> ${selected_files} # always select directory, so that also empty directories will be created
-						   # no matter if they're of type new or old
-         (( count = count + 1 ))
-         if [[ "${select}" = "all" ]]
-         then ProcessDirectory "${from}/${file}" "COPY"
-         else u_dir="${file##*/}" # put in uppercase for pattern matching and remove any parent directory
-              if [[ "${u_dir}" = ?(BACKUP*|ARCH*|REORG*) ]]
-              then # this is an old directory
-                   if [[ "${select}" = "new" ]]
-                   then # select=new and directory is old type
-                        Log 3 "INFO: (09) Skipping backup/arch/reorg directory: ${from}/${file} and any subfolders"
-                   else # select=old and directory is old type
-                        Log 3 "INFO: (10) Descending in backup/arch/reorg directory: ${from}/${file}"
-                        ProcessDirectory "${from}/${file}" "COPY"
+    then case ${foldertype} in
+              all|old) echo ${from}/${file} >> ${selected_files} # always select directory so that also empty directories will be created
+                       (( count = count + 1 ))
+                       ProcessDirectory "${from}/${file}" "${foldertype}"
+                       ;;
+              new) u_dir="${file##*/}" # put in uppercase for pattern matching and remove any parent directory
+                   if [[ "${u_dir}" = ?(BACKUP*|ARCH*|REORG*) ]]
+                   then # this is an old directory
+                        if [[ "${select}" = "old" ]]
+                        then Log 3 "INFO: ($0 02) Selecting backup/arch/reorg directory: ${from}/${file} and any subfolders"
+                             echo ${from}/${file} >> ${selected_files} # always select directory so that also empty directories will be created
+                             (( count = count + 1 ))
+                             ProcessDirectory "${from}/${file}" "old"
+                        else # select will be new since it wasn't old (see if clause) and it can't be 'all' because then foldertype would also be 'all'
+                             Log 3 "INFO: ($0 03) Skipping backup/arch/reorg directory: ${from}/${file} and any subfolders"
+                        fi
+                   else # this is a new directory
+                        if [[ "${select}" = "old" ]]
+                        then # do not select this directory but do descend in order to check possible other subfolders
+                             # cpio will create any parent directory if we would find old subfolders down in this hierarchy
+                             ProcessDirectory "${from}/${file}" "new"
+                        else # select will be new since it wasn't old (see if clause) and it can't be 'all' because then foldertype would also be 'all'
+                             echo ${from}/${file} >> ${selected_files} # always select directory so that also empty directories will be created
+                             (( count = count + 1 ))
+                             ProcessDirectory "${from}/${file}" "new"
+                        fi
                    fi
-              else # this is a new directory
-                   if [[ "${select}" = "old" ]]
-                   then # select=old and directory is new type
-                        Log 3 "INFO: (11) Descending in directory: ${from}/${file} without copying files"
-                        ProcessDirectory "${from}/${file}" "TRAVERSE" # we don't want to copy new files but we
-                                                 # need to traverse the directory to look for 'old' subfolders
-                   else # select=new and directory is new type
-                        ProcessDirectory "${from}/${file}" "COPY"
-                   fi
-              fi
-         fi
-    else [[ "$mode" = "TRAVERSE" ]] && continue # don't process any files if we're just traversing this dir
-	 echo ${from}/${file} >> ${selected_files} # This is a file (or more correct: not a directory)
+                   ;;
+               *) Log 1 "ERROR: ($0 04) Invalid value for foldertype: ${foldertype}"
+                  exit
+                  ;;
+         esac
+    else [[ "$foldertype" != "${select}" ]] && continue # don't process any files if we're just traversing this dir
+         echo ${from}/${file} >> ${selected_files} # This is a file (or more correct: not a directory)
          (( count = count + 1 ))
     fi
-    [[ $(( count % iteration )) -eq 0 ]] && Log 2 "INFO: (12) Progress: $count files selected / total-count=$totalcount / ${from}/${file}"
+
+    [[ $(( count % iteration )) -eq 0 ]] && Log 2 "INFO: ($0 04) Progress: $count files selected / total-count=$totalcount / ${from}/${file}"
+
+    [[ $count -gt $start_cpio_threshold ]] && StartCPIOThread # Enough files to start the transfer
 done 
 
-[[ $count -gt $start_cpio_threshold ]] && StartCPIOThread # Enough files to start the transfer
 
 return # End of ProcessDirectory Function
 }
@@ -201,52 +235,54 @@ shift $(( OPTIND-1 ))
 # Show What We Got
 
 cat - <<EOT
---------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------
      current working directory: $(pwd)
-                        source: ${main_from}
-                        target: ${main_to}
-                       su_user: ${su_user}
-          start_cpio_threshold: ${start_cpio_threshold} # start cpio thread after exceeding threshold
-                     iteration: ${iteration} # display count every iteration
-                   max_threads: ${max_threads}  # do not run more than max_threads at the same time
-                     log_level: ${log_level}
-           wich dirs to select: ${select} (old means folder names starting with backup, arch or reorg)
-                selected_files: ${selected_files}
-               all files start with ${file_prefix}
---------------------------------------------------------------------------------
+-s                      source: ${main_from}
+-t                      target: ${main_to}
+-u                     su_user: ${su_user}
+-T        start_cpio_threshold: ${start_cpio_threshold} # start cpio thread after exceeding threshold
+-d                   iteration: ${iteration} # display count every iteration
+-m                 max_threads: ${max_threads}  # do not run more than max_threads at the same time
+-l                   log_level: ${log_level}
+-S         wich dirs to select: ${select} (all = everything; 
+                                     old = folder names starting with backup, arch or reorg including subfolders;
+                                     new = opposite of old)
+(temp files)    selected_files: ${selected_files}
+ all temporary files start with ${file_prefix}
+------------------------------------------------------------------------------------------------------------------------
 EOT
 
-Log 2 "INFO: (13) $0 is starting"
+Log 2 "INFO: ($0 01) $0 is starting"
 
 # Sanity checks
 
 ### old dtksh equivalent [[ ${main_from:0:1} == "/" ]] && {
 [[ $(expr substr "$main_from" 1 1 ) = "/" ]] && {
 
-    Log 1 "ERROR: (14) ${main_from} MUST be a relative path and should not start with /."
+    Log 1 "ERROR: ($0 02) ${main_from} MUST be a relative path and should not start with /."
     exit
     }
 
 [[ ! -d ${main_from} ]] && {
-    Log 1 "ERROR: (15) ${main_from} isn't a directory."
+    Log 1 "ERROR: ($0 03) ${main_from} isn't a directory."
     exit
     }
 
 if [[ -n "${su_user}" ]] # su_user option has been used
 then pwget -n ${su_user} > /dev/null || {
-         Log 1 "ERROR: (16) ${su_user} is not a valid username."
+         Log 1 "ERROR: ($0 04) ${su_user} is not a valid username."
          exit
          }
 
      type=$(su ${su_user} -c "file ${main_to}")
      [[ ${type##*	} != "directory" ]] && { # note there's a TAB char in ${type##*	}
-         Log 1 "ERROR: (17) ${main_to} isn't a directory."
+         Log 1 "ERROR: ($0 05) ${main_to} isn't a directory."
          exit
          }
 else
      type=$(file "${main_to}")
      [[ ${type##*	} != "directory" ]] && { # note there's a TAB char in ${type##*	}
-         Log 1 "ERROR: (18) ${main_to} isn't a directory."
+         Log 1 "ERROR: ($0 06) ${main_to} isn't a directory."
          exit
          }
 fi
@@ -256,7 +292,7 @@ fi
 # new files)
 
 if [[ "${select}" = "all" ]]
-then ProcessModeTopLevel="COPY"
+then ProcessModeTopLevel="all" # this option doesn't care about the type of directory
 else U_dir=$(basename ${main_from}) # get the name of the lowest level dir and make it uppercase
           # we use basename for this and not ${main_from##*/} because main_from might end 
           # in / and basename is so friendly to always return the last part of the path
@@ -265,15 +301,12 @@ else U_dir=$(basename ${main_from}) # get the name of the lowest level dir and m
      then # this is an old type starting directory
           # only select old files if the starting directory is old type
           if [[ "${select}" = "old" ]]
-          then ProcessModeTopLevel="COPY"
-          else ProcessModeTopLevel="TRAVERSE"
+          then ProcessModeTopLevel="old"
+          else Log 1 "ERROR: ($0 07) -s ${main_from} (=${U_dir} is an old type directory, this conflicts with -S new"
+               exit
           fi
      else # this is a new type starting directory
-          # only select new files if the starting directory is new type
-          if [[ "${select}" = "new" ]]
-          then ProcessModeTopLevel="COPY"
-          else ProcessModeTopLevel="TRAVERSE"
-          fi
+          ProcessModeTopLevel="new"
      fi
 fi
 
@@ -285,14 +318,14 @@ ProcessDirectory "${main_from}" ${ProcessModeTopLevel}
 
 StartCPIOThread # Don't forget to copy the last files
 
-Log 2 "INFO: (19) Check all logs in ${file_prefix}_cpio_thread_*.log"
-Log 2 "INFO: (20) $totalcount files processed."
-Log 2 "INFO: (21) jobs still running will be listed here."
+Log 2 "INFO: ($0 19) Check all logs in ${file_prefix}_cpio_thread_*.log"
+Log 2 "INFO: ($0 20) $totalcount files processed."
+Log 2 "INFO: ($0 21) jobs still running will be listed here."
 jobs
 
-Log 2 "INFO: (22) wait for possible jobs to be completed."
+Log 2 "INFO: ($0 22) wait for possible jobs to be completed."
 wait
 
-Log 2 "INFO: (23) $0 completed"
+Log 2 "INFO: ($0 23) $0 completed"
 
 exit
